@@ -1,0 +1,16 @@
+{
+  "//": "Type checking for plain JavaScript against tedi.d.ts, so a typo in a `ctx.*` call is an editor squiggle instead of a runtime TypeError inside an async handler. `types: []` keeps tsc from walking up into the monorepo's own node_modules for ambient @types it has no business checking.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "checkJs": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src/**/*.js", "tedi.d.ts"],
+  "exclude": ["node_modules"]
+}

@@ -1,0 +1,87 @@
+name: Release
+
+# Tag-triggered release. Each `vX.Y.Z` push builds `extension.js` from src/,
+# checks the manifest version matches the tag, zips the runtime files (no
+# sidecar - this extension is pure JS), and uploads to the GitHub release that
+# TEDI's installer reads from `releases/latest`.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Required when running manually."
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Package + release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 20
+
+      # extension.js is NOT committed - build it from src/ so the release .zip
+      # carries a fresh bundle.
+      - name: Build extension.js from src/
+        run: |
+          set -euo pipefail
+          npm ci
+          node build.mjs
+          node --check extension.js
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          version="${tag#v}"
+          echo "tag=$tag"         >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify manifest.json version matches the tag
+        run: |
+          set -euo pipefail
+          mver=$(jq -r '.version' manifest.json)
+          if [ "$mver" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::manifest.json version ($mver) does not match tag (${{ steps.ver.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Package extension
+        id: pkg
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          out="dist/tedi.browser-${{ steps.ver.outputs.version }}.zip"
+          # Only ship runtime files: manifest + JS + icons.
+          zip -r "$out" \
+            manifest.json \
+            extension.js \
+            logo.png
+          unzip -l "$out"
+          echo "path=$out" >> "$GITHUB_OUTPUT"
+
+      - name: Create / update GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          files: ${{ steps.pkg.outputs.path }}

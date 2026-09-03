@@ -1,0 +1,87 @@
+{
+  "$schema": "./manifest.schema.json",
+  "id": "tedi.browser",
+  "name": "Browser",
+  "version": "0.1.0",
+  "description": "A real Chromium browser inside TEDI, driven over the Chrome DevTools Protocol. Reuses the Chrome, Edge, Brave or Chromium already on the machine and only downloads Chrome for Testing when none is found, so the TEDI installer stays unchanged. Renders into a pane over a CDP screencast, keeps its own profile so Chrome Web Store extensions persist, and gives the AI agent an accessibility-tree view of the page instead of a scraped one. Every browser action is also an MCP tool, so an outside CLI drives the same tabs you do.",
+  "author": "IlhamRiski - ilhamriski.com",
+  "homepage": "https://tedi.ilhamriski.com/",
+  "icon": "logo.png",
+  "main": "extension.js",
+  "permissions": [
+    "panels:register",
+    "tabs:open",
+    "ui:toast",
+    "statusbar:write",
+    "settings:read",
+    "settings:write",
+    "invoke:shell_bg_spawn_direct",
+    "invoke:shell_bg_kill",
+    "invoke:shell_bg_list",
+    "invoke:shell_run_command",
+    "invoke:fs_read_file",
+    "invoke:fs_glob"
+  ],
+  "engines": {
+    "tedi": ">=0.4.42"
+  },
+  "contributes": {
+    "panels": [
+      {
+        "id": "browser",
+        "title": "Browser",
+        "surface": "tab",
+        "icon": "lucide:Globe",
+        "hideHostHeader": true
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "tedi.browser.open",
+        "key": "Mod+Alt+P"
+      }
+    ],
+    "commands": [
+      {
+        "id": "tedi.browser.open",
+        "title": "Browser: open a pane"
+      },
+      {
+        "id": "tedi.browser.manageExtensions",
+        "title": "Browser: manage Chrome extensions"
+      },
+      {
+        "id": "tedi.browser.shutdown",
+        "title": "Browser: stop the Chromium process"
+      }
+    ],
+    "settings": [
+      {
+        "id": "enginePath",
+        "type": "note",
+        "label": "Chromium",
+        "default": "Not resolved yet"
+      },
+      {
+        "id": "unpackedDir",
+        "type": "note",
+        "label": "Unpacked extensions",
+        "default": "Resolved on first launch"
+      },
+      {
+        "id": "quality",
+        "type": "number",
+        "label": "Screencast quality",
+        "default": 70,
+        "description": "1-100. Lower is sharper on bandwidth and CPU, higher is sharper on text. 70 reads well and stays cheap."
+      },
+      {
+        "id": "idleShutdownMinutes",
+        "type": "number",
+        "label": "Stop Chromium after idle minutes",
+        "default": 10,
+        "description": "Close the Chromium process when no browser pane has been open this long, so a background browser stops costing RAM. 0 keeps it running."
+      }
+    ]
+  }
+}
