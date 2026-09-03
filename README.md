@@ -122,7 +122,7 @@ url you type yourself is not gated.
 | `panels:register`, `tabs:open` | Own the browser pane and open it. |
 | `ui:toast`, `statusbar:write` | First-run progress, and the status-bar globe. |
 | `settings:read` / `settings:write` | The four settings above. |
-| `invoke:shell_bg_spawn_direct` / `shell_bg_kill` / `shell_bg_list` | Start and stop Chromium, and the one-shot `curl` / archiver used on first run. |
+| `invoke:shell_bg_spawn_direct` / `shell_bg_kill` / `shell_bg_list` / `shell_bg_logs` | Start and stop Chromium, notice when it exits, and read the output of the one-shot `curl` / archiver used on first run. |
 | `invoke:shell_run_command` | Resolve a browser on `PATH` (Linux). |
 | `invoke:fs_read_file` | Read `DevToolsActivePort` and the Chrome for Testing index. |
 | `invoke:fs_glob` | Find an installed browser, and the unpacked extension folders. |

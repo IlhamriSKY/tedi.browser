@@ -2,7 +2,7 @@
   "$schema": "./manifest.schema.json",
   "id": "tedi.browser",
   "name": "Browser",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A real Chromium browser inside TEDI, driven over the Chrome DevTools Protocol. Reuses the Chrome, Edge, Brave or Chromium already on the machine and only downloads Chrome for Testing when none is found, so the TEDI installer stays unchanged. Renders into a pane over a CDP screencast, keeps its own profile so Chrome Web Store extensions persist, and gives the AI agent an accessibility-tree view of the page instead of a scraped one. Every browser action is also an MCP tool, so an outside CLI drives the same tabs you do.",
   "author": "IlhamRiski - ilhamriski.com",
   "homepage": "https://tedi.ilhamriski.com/",
@@ -18,6 +18,7 @@
     "invoke:shell_bg_spawn_direct",
     "invoke:shell_bg_kill",
     "invoke:shell_bg_list",
+    "invoke:shell_bg_logs",
     "invoke:shell_run_command",
     "invoke:fs_read_file",
     "invoke:fs_glob"

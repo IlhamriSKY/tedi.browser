@@ -111,9 +111,46 @@ async function args(headless) {
   // Chromium's default, and the crash it causes looks like a GPU fault.
   if (ctx.os?.platform === "linux") list.push("--disable-dev-shm-usage");
   if (headless) list.push("--headless=new");
+  list.push(`--remote-allow-origins=${allowedOrigin()}`);
   const unpacked = await unpackedExtensions();
   if (unpacked.length) list.push(`--load-extension=${unpacked.join(",")}`);
   return list;
+}
+
+/**
+ * The page a freshly launched Chromium opens on.
+ *
+ * Given no url, Chromium opens `chrome://newtab/` - Google's page, which fetches
+ * from the network and is not ours to show inside a TEDI pane. `about:blank` is
+ * the blank surface the pane's own address bar implies, and it costs no request.
+ */
+const START_PAGE = "about:blank";
+
+/**
+ * The origin Chromium must accept a DevTools WebSocket from.
+ *
+ * WITHOUT THIS NOTHING CONNECTS. Chrome refuses any WebSocket upgrade to its
+ * debugging endpoint that carries an `Origin` header, answering 403 with
+ * "Rejected an incoming WebSocket connection from the <origin> origin". Every
+ * socket opened from a web page carries one, so the extension - which lives in
+ * TEDI's webview - is refused on every attempt, while a plain CLI client (which
+ * sends no Origin) connects fine. That asymmetry is what makes it look like a
+ * hang rather than a rejection.
+ *
+ * Read from `location.origin` rather than hardcoded, because it differs by build
+ * and platform: `http://localhost:1420` in dev, `http://tauri.localhost` on
+ * Windows, `tauri://localhost` elsewhere. Exactly one origin is allowed - `*`
+ * would let any page that can guess the port drive this browser, and CDP has no
+ * authentication of its own to fall back on.
+ */
+function allowedOrigin() {
+  try {
+    const o = globalThis.location?.origin;
+    if (typeof o === "string" && o && o !== "null") return o;
+  } catch {
+    // No `location` (a non-DOM host); fall through to the Tauri default.
+  }
+  return "http://tauri.localhost";
 }
 
 /** Read `DevToolsActivePort` and build the browser-target socket URL, or `null`
@@ -168,7 +205,7 @@ export function ensureBrowser(say, headless = true) {
     say?.("Starting the browser...");
     state.proc = await ctx.invoke("shell_bg_spawn_direct", {
       program: engine,
-      args: await args(headless),
+      args: [...(await args(headless)), START_PAGE],
     });
 
     const deadline = Date.now() + START_TIMEOUT_MS;
@@ -244,6 +281,29 @@ export async function armIdleShutdown() {
   state.idleTimer = setTimeout(() => {
     if (state.panes === 0) void stopBrowser();
   }, minutes * 60_000);
+}
+
+/**
+ * Resolve once the browser process we started has exited.
+ *
+ * Polls `shell_bg_list` because there is no exit event to subscribe to. Used by
+ * the extension-manager hand-off: a VISIBLE Chromium owns the profile while the
+ * user installs from the Web Store, and the pane can only come back once that
+ * window is gone.
+ *
+ * Returns immediately when nothing is running, so a caller never waits on a
+ * process that already died.
+ */
+export async function waitForBrowserExit(pollMs = 1000) {
+  const handle = state.proc;
+  if (handle == null) return;
+  for (;;) {
+    const list = await ctx.invoke("shell_bg_list").catch(() => []);
+    const row = Array.isArray(list) ? list.find((p) => p.handle === handle) : undefined;
+    // Gone from the table counts as exited: the host prunes finished processes.
+    if (!row || row.exited) return;
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
 }
 
 /**

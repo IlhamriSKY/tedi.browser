@@ -18,6 +18,11 @@
  *  legitimately takes seconds; anything past this is a lost message. */
 const COMMAND_TIMEOUT_MS = 30_000;
 
+/** How long to wait for the socket to open. Short: a live Chromium on loopback
+ *  answers in milliseconds, so anything past this is an address that is not
+ *  going to answer at all. */
+const CONNECT_TIMEOUT_MS = 5_000;
+
 export class Cdp {
   /** @param {WebSocket} ws */
   constructor(ws) {
@@ -56,8 +61,26 @@ export class Cdp {
         reject(err instanceof Error ? err : new Error(String(err)));
         return;
       }
-      const fail = () => reject(new Error(`CDP socket refused: ${url}`));
-      ws.addEventListener("open", () => resolve(new Cdp(ws)), { once: true });
+      // A TIMEOUT, because a socket can do neither. A stale `DevToolsActivePort`
+      // can name a port some other process has since taken: the TCP connect
+      // succeeds, the WebSocket upgrade never completes, and no `open`, `error`
+      // or `close` ever fires. Callers await this inside loops that believe they
+      // are bounded, so without this the pane sits on "Starting the browser..."
+      // for the rest of the session with nothing to show for it.
+      const timer = setTimeout(() => {
+        try {
+          ws.close();
+        } catch {
+          // Already dead; the rejection below is what matters.
+        }
+        reject(new Error(`CDP socket did not answer within ${CONNECT_TIMEOUT_MS}ms: ${url}`));
+      }, CONNECT_TIMEOUT_MS);
+      const settle = (fn) => (arg) => {
+        clearTimeout(timer);
+        fn(arg);
+      };
+      const fail = settle(() => reject(new Error(`CDP socket refused: ${url}`)));
+      ws.addEventListener("open", settle(() => resolve(new Cdp(ws))), { once: true });
       ws.addEventListener("error", fail, { once: true });
       ws.addEventListener("close", fail, { once: true });
     });

@@ -16,7 +16,13 @@
 // hidden pane has none.
 
 import { ctx, state, emitTabsChanged } from "./runtime.js";
-import { ensureBrowser, armIdleShutdown, openExtensionManager } from "./launch.js";
+import {
+  ensureBrowser,
+  armIdleShutdown,
+  openExtensionManager,
+  stopBrowser,
+  waitForBrowserExit,
+} from "./launch.js";
 import { syncTabs, newTab, closeTab, setActive } from "./tabs.js";
 import { attachScreencast } from "./screencast.js";
 import { invalidate } from "./snapshot.js";
@@ -36,7 +42,7 @@ const css = String.raw`
 .tb-url:focus { border-color:var(--ring); }
 .tb-stage { position:relative; flex:1; min-height:0; background:var(--background); }
 .tb-canvas { display:block; width:100%; height:100%; outline:none; }
-.tb-note { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; color:var(--muted-foreground); background:var(--background); }
+.tb-note { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; white-space:pre-line; padding:24px; color:var(--muted-foreground); background:var(--background); }
 `;
 
 /** One `<style>` for every pane. Injected once and left in place: it is under a
@@ -70,6 +76,12 @@ function icon(name, size) {
     master = ctx.ui.icon(name, { size });
     iconCache.set(key, master);
   }
+  // THE MASTER MAY STILL BE EMPTY. The host returns the span immediately and
+  // fills it when the lazily-loaded icon chunk arrives, so a clone taken before
+  // that copies an empty span - and because this cache is module-level, it would
+  // stay empty for the rest of the session. Mount a real one until the master
+  // has actually rendered; from then on cloning is free and correct.
+  if (!master.firstChild) return ctx.ui.icon(name, { size });
   return /** @type {HTMLElement} */ (master.cloneNode(true));
 }
 
@@ -130,9 +142,19 @@ export function renderPane(container) {
   let castTargetId = null;
   let disposed = false;
 
-  const setNote = (text) => {
+  /**
+   * Show a message over the page, optionally as a button.
+   *
+   * `retry` is what keeps the pane recoverable: every state that leaves it
+   * without a stream (a failed start, the extension-manager hand-off) is a state
+   * the user must be able to click out of, or the pane stays dead until it is
+   * closed and reopened.
+   */
+  const setNote = (text, retry) => {
     note.textContent = text ?? "";
     note.style.display = text ? "flex" : "none";
+    note.onclick = retry ?? null;
+    note.style.cursor = retry ? "pointer" : "default";
   };
 
   function renderStrip() {
@@ -187,7 +209,12 @@ export function renderPane(container) {
       return;
     }
     if (castTargetId === active.targetId && cast) {
+      // Already streaming this tab. Still clear the note: a caller that put one
+      // up before calling here (the extension-manager hand-off, a retry) would
+      // otherwise leave the page hidden behind a message about work that has
+      // already finished.
       renderStrip();
+      setNote(null);
       return;
     }
     cast?.stop();
@@ -245,12 +272,40 @@ export function renderPane(container) {
     invalidate(active.targetId);
   }
 
+  /**
+   * Hand the profile to a VISIBLE Chromium so the Web Store is usable, then take
+   * it back.
+   *
+   * One process owns a user-data-dir, so the headless instance has to stop for
+   * the visible one to start - and the pane has no page until it comes back.
+   * Waiting for that window to exit and re-binding is the whole point: without
+   * it the pane sits on a dead message for the rest of the session, which is
+   * exactly what "close it and reopen the pane" asks the user to work around.
+   */
   async function openExtensions() {
     cast?.stop();
     cast = null;
     castTargetId = null;
-    setNote("Chromium opened in its own window so you can use the Chrome Web Store. Close it, then reopen this pane.");
-    await openExtensionManager();
+    setNote(
+      "Opening Chromium so you can install from the Chrome Web Store." +
+        "\nThis pane comes back when you close that window.",
+    );
+    try {
+      await openExtensionManager();
+      await waitForBrowserExit();
+    } catch (err) {
+      setNote(`${err instanceof Error ? err.message : String(err)}\n\nClick to try again.`, () =>
+        void bindActive(),
+      );
+      return;
+    }
+    if (disposed) return;
+    // The visible instance is gone; drop every handle derived from it so the
+    // next call starts a fresh headless one rather than talking to a dead socket.
+    await stopBrowser();
+    if (disposed) return;
+    setNote("Starting the browser...");
+    await bindActive();
   }
 
   url.addEventListener("keydown", (e) => {
@@ -288,7 +343,10 @@ export function renderPane(container) {
   };
   state.listeners.add(onTabsChanged);
 
-  void (async () => {
+  /** Bring the pane up, and leave a way back when it cannot. A first run may
+   *  fail for reasons that fix themselves - no Chromium yet, a download that
+   *  timed out - so the message is a button rather than a dead end. */
+  async function start() {
     try {
       setNote("Starting the browser...");
       await ensureBrowser((m) => setNote(m));
@@ -297,9 +355,14 @@ export function renderPane(container) {
       await bindActive();
       canvas.focus();
     } catch (err) {
-      setNote(err instanceof Error ? err.message : String(err));
+      if (disposed) return;
+      setNote(
+        `${err instanceof Error ? err.message : String(err)}\n\nClick to try again.`,
+        () => void start(),
+      );
     }
-  })();
+  }
+  void start();
 
   return () => {
     disposed = true;
