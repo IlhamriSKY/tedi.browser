@@ -1,8 +1,9 @@
 # TEDI Browser
 
 A real Chromium in a [TEDI](https://tedi.ilhamriski.com/) pane, driven over the
-Chrome DevTools Protocol: address bar, tab strip, and Chrome Web Store
-extensions that persist in its own profile. The AI agent drives the same tabs
+Chrome DevTools Protocol. The browser runs in app mode and TEDI draws the chrome,
+so a pane looks the same in the tabs view and on the canvas: one toolbar, one
+page, no second browser UI inside your editor. The AI agent drives the same tabs
 you do, reading the page's accessibility tree rather than scraping the DOM.
 
 It reuses the Chrome, Edge, Brave or Chromium already on your machine and only
@@ -35,7 +36,7 @@ If a new release exists, click **Update** to reinstall in place.
 | Chromium, when the machine already has Chrome, Edge, Brave or Chromium | **0 MB** |
 | Chromium, when it has none | ~170 MB, downloaded once into `~/.tedi/browser/engine` |
 | While no pane is open | no process at all — Chromium stops after the idle timeout |
-| While a pane is hidden | no frames encoded — the screencast stops |
+| While a pane is hidden | its window is parked off-screen; nothing is drawn |
 
 Windows practically always lands in the free row, because Edge ships with the OS.
 
@@ -43,7 +44,7 @@ Windows practically always lands in the free row, because Edge ships with the OS
 
 - **Engine** - looks for an installed Chrome, Edge, Brave or Chromium and only
   downloads Chrome for Testing when there is none.
-- **Process** - started headless with its own profile and
+- **Process** - an ordinary, non-headless Chromium with its own profile and
   `--remote-debugging-port=0`; the real port is read back out of
   `DevToolsActivePort`. A Chromium left running from an earlier session is
   adopted rather than duplicated.
@@ -51,9 +52,25 @@ Windows practically always lands in the free row, because Edge ships with the OS
   multiplexed down a single connection. The HTTP side of CDP is unreachable from
   TEDI's origin (it sends no CORS headers), which is why the socket address
   comes off disk.
-- **Rendering** - `Page.startScreencast` frames are drawn into a `<canvas>` and
-  the pane's mouse and keyboard go back as *trusted* input events. The emulated
-  viewport is pinned to the pane's CSS size, so coordinates map one to one.
+- **Rendering** - the pane is an empty rectangle and the real Chromium window is
+  put on it, so the page you see is the browser itself, composited by the GPU:
+  full resolution, the real pointer over a link, native selection and popups, and
+  an ordinary Chrome user agent, which is what lets a Google sign-in through. On
+  Windows TEDI adopts that window as a child of its own, so it is clipped to
+  TEDI, minimises with it, and is gone from the taskbar and Alt-Tab; elsewhere it
+  stays top-level and is tracked to the pane from outside. Either way it is
+  parked out of sight the moment the pane is not visible.
+- **Rendering on the canvas** - a frame stream instead, and the window is parked
+  for as long as the pane lives there. The canvas workspace view puts every pane
+  on one transformed layer where panes overlap, the whole surface zooms and
+  anything off screen is culled. An OS window can do none of those: it would sit
+  at the right rectangle showing a 1:1 crop of a page you asked to see at 40%, on
+  top of every window above it. So there the pane paints a `Page.startScreencast`
+  stream into a `<canvas>`, which the transform scales, DOM order stacks and
+  `display:none` culls, all for free. Same Chrome, same profile, same tab: only
+  the painter changes, so a signed-in session survives switching views.
+- **One pane, one page** - the pane owns exactly one window, so splitting TEDI is
+  how you open a second. The page's title and favicon go on the pane header.
 - **Agent view** - the browser's own accessibility tree, returned as numbered
   controls. Clicks and fills address a `[N]` from that snapshot; there are no CSS
   selectors, so a model cannot invent a target.
@@ -65,8 +82,8 @@ Two ways in, and an ad blocker is the obvious first one.
 **Unpacked - always works.** Drop the extension's unpacked folder (the one with
 its `manifest.json`) into `~/.tedi/browser/extensions/`, one folder per
 extension, and it is passed to Chromium as `--load-extension` on the next
-launch. This route is honoured in headless, so it needs no window and no clicks.
-The exact path is shown in the extension's settings card.
+launch. It needs no window and no clicks. The exact path is shown in the
+extension's settings card.
 
 ```
 ~/.tedi/browser/extensions/
@@ -75,11 +92,22 @@ The exact path is shown in the extension's settings card.
     ...
 ```
 
-**Chrome Web Store.** The profile is a real Chromium profile, so a Store install
-persists in it. The Store itself needs a visible window, so **Browser: manage
-Chrome extensions** stops the headless instance and opens Chromium on
-`chrome://extensions`. Close it when you are done; the next pane goes back to
-headless with whatever you installed.
+**Chrome Web Store: not from inside a pane.** Chromium runs `--app=`, so a pane
+has no tab strip, no omnibox and no extensions button - that is what lets TEDI
+draw the same toolbar on every surface, and it is the trade the design makes. The
+Store needs Chrome's own UI to drive it, and there is none here.
+
+The profile itself is an ordinary Chromium profile at `~/.tedi/browser/profile`,
+outside the extension's install folder, so anything installed into it survives an
+update. If you want a Store extension, install it into that profile once with a
+normal Chrome:
+
+```
+chrome.exe --user-data-dir="%USERPROFILE%/.tedi/browser/profile"
+```
+
+Stop the TEDI browser first (**Browser: stop the Chromium process**): one process
+owns a user-data-dir.
 
 ## For agents
 
@@ -112,7 +140,6 @@ url you type yourself is not gated.
 
 - **Chromium** - which engine was resolved, and where it lives.
 - **Unpacked extensions** - the folder above, so you can find it.
-- **Screencast quality** - 1..100 JPEG quality. 70 reads well and stays cheap.
 - **Stop Chromium after idle minutes** - 0 keeps it warm.
 
 ## Permissions

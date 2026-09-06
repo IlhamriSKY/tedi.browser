@@ -119,8 +119,7 @@ export class Cdp {
    *
    * Not filtered by `sessionId` here: a caller that cares gets it as the second
    * argument, and the common case (one active tab) would pay a lookup per event
-   * for nothing. Screencast frames arrive at up to 60/s, so this path stays
-   * allocation-free on purpose.
+   * for nothing.
    *
    * @param {string} method
    * @param {(params: any, sessionId?: string) => void} cb

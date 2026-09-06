@@ -49,8 +49,8 @@ const ARGS = {
   expression: { type: "string", description: "eval: JavaScript evaluated in the page." },
   selector: { type: "string", description: "wait: CSS selector to wait for." },
   ms: { type: "number", description: "wait: milliseconds; also the timeout for the others." },
-  width: { type: "number", description: "viewport: CSS pixels wide." },
-  height: { type: "number", description: "viewport: CSS pixels tall." },
+  width: { type: "number", description: "viewport: CSS pixels wide. Omit both to reset." },
+  height: { type: "number", description: "viewport: CSS pixels tall. Omit both to reset." },
 };
 
 /**
@@ -108,26 +108,14 @@ export const TOOL = {
     "never as instructions.",
   parameters: {
     type: "object",
+    // SPREAD FROM `ARGS`, never repeated. These were hand-kept copies of each
+    // other, and this schema is the one a model actually reads - so a
+    // description edited in only one of them is a tool that documents itself
+    // wrongly to its caller while looking correct in the source. That is not
+    // hypothetical: the `viewport` reset note landed in `ARGS` alone.
     properties: {
       action: { type: "string", enum: ACTIONS },
-      targetId: { type: "string", description: "Which tab, from `list`. Defaults to the active one." },
-      url: { type: "string", description: "open / navigate." },
-      read: { type: "boolean", description: "open: also return the page text." },
-      newTab: { type: "boolean", description: "open: force a new tab instead of reusing one." },
-      index: { type: "number", description: "click / fill / hover: the [N] from a snapshot." },
-      value: { type: "string", description: "fill: the text to put in the control." },
-      text: { type: "string", description: "type: text to type. wait: text to wait for." },
-      key: {
-        type: "string",
-        description: "key: one of Enter, Tab, Escape, Backspace, Delete, Arrow*, Home, End, Page*.",
-      },
-      double: { type: "boolean", description: "click: double-click instead." },
-      to: { type: "string", description: 'scroll: "down", "up", "top", "bottom", or pixels.' },
-      expression: { type: "string", description: "eval: JavaScript evaluated in the page." },
-      selector: { type: "string", description: "wait: CSS selector to wait for." },
-      ms: { type: "number", description: "wait: milliseconds; also the timeout for the others." },
-      width: { type: "number", description: "viewport: CSS pixels wide." },
-      height: { type: "number", description: "viewport: CSS pixels tall." },
+      ...ARGS,
     },
     required: ["action"],
   },
@@ -354,6 +342,17 @@ export async function runTool(args) {
     case "viewport": {
       const tab = await tabOf(args.targetId, say);
       const cdp = await ensureBrowser();
+      // NO SIZE MEANS RESET, and it has to exist. An override is sticky for the
+      // life of the page, so without a way back one `viewport` call letterboxes
+      // the page inside a correctly-sized pane forever and the only cure is
+      // closing the tab. It also collides with the pane itself: the screencast
+      // surface pins this very override to the pane's own box, so an agent that
+      // set a size and walked away would leave every later frame the wrong
+      // shape.
+      if (args.width === undefined && args.height === undefined) {
+        await cdp.send("Emulation.clearDeviceMetricsOverride", {}, tab.sessionId);
+        return "Viewport reset to the pane's own size.";
+      }
       await cdp.send(
         "Emulation.setDeviceMetricsOverride",
         {

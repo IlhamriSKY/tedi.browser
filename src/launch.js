@@ -44,12 +44,11 @@ export function unpackedExtensionsDir() {
 /**
  * Unpacked extension folders to load, newline-free and comma-joined for Chromium.
  *
- * TWO WAYS TO GET AN EXTENSION, and this is the one that always works. A Web
- * Store install lands in the profile and is carried by it, but the Store itself
- * needs a visible window (see `openExtensionManager`). An unpacked folder needs
- * neither: `--load-extension` is honoured in headless, so dropping an ad
- * blocker's unpacked build in here makes it live on the next launch with no UI
- * at all.
+ * THE ONLY WAY TO GET AN EXTENSION FROM INSIDE TEDI. A Web Store install lands
+ * in the profile and is carried by it, but reaching the Store needs Chrome's own
+ * toolbar, and a pane has none - the browser runs `--app=`. An unpacked folder
+ * needs no UI at all: `--load-extension` is applied at startup, so dropping an
+ * ad blocker's unpacked build in here makes it live on the next launch.
  *
  * A folder counts only if it holds a `manifest.json`, so a half-finished
  * download or a stray README cannot make Chromium refuse to start - it exits
@@ -84,15 +83,16 @@ async function unpackedExtensions() {
  *   - component update and background networking are pure background traffic
  *     and disk growth for a browser that lives minutes at a time;
  *   - the mock keychain stops macOS and Linux prompting for keychain access on
- *     first launch, a modal the user cannot see when we run headless;
+ *     first launch, a modal that would appear over a pane and belong to nothing;
  *   - the disk cache cap is the storage budget.
  *
- * `--headless=new` is the real headless: a full Chromium, extensions included,
- * with no OS window. It is what makes the pane the only place the page appears.
+ * `parked` is how a window stays out of the way until a pane claims it: born far
+ * off-screen at a fixed size, rather than not drawn at all. See the note on
+ * PARK_ARGS below for why not-drawn is not an option.
  *
- * @param {boolean} headless
+ * @param {boolean} parked Start the first window off-screen.
  */
-async function args(headless) {
+async function args(parked) {
   const list = [
     "--remote-debugging-port=0",
     `--user-data-dir=${profileDir()}`,
@@ -105,12 +105,62 @@ async function args(headless) {
     "--disable-breakpad",
     "--password-store=basic",
     "--use-mock-keychain",
+    // A pane is not where anyone wants to answer "Restore pages?". The browser
+    // is stopped whenever the last pane closes and on the idle timeout, so
+    // Chromium sees an unclean exit as a matter of course and would offer to
+    // restore on every single launch.
+    "--hide-crash-restore-bubble",
+    "--disable-session-crashed-bubble",
+    // KEEP PAINTING WHILE NOBODY CAN SEE THE WINDOW. These four are what make
+    // the screencast surface possible at all. A pane on the canvas parks its
+    // window at -32000 and streams frames out of it, and a window that
+    // intersects no display is exactly what native occlusion tracking calls
+    // occluded: Chromium then hides the WebContents, the compositor stops
+    // submitting frames, and `Page.startScreencast` goes silent. The pane paints
+    // one frame and freezes, while clicks still land - a dead-looking browser
+    // that is in fact perfectly alive.
+    //
+    // It never came up before because the previous streaming design ran
+    // `--headless=new`, where there is no native window to occlude. Headless is
+    // gone (Google refuses a sign-in to `HeadlessChrome`), so the opt-out has to
+    // be explicit. Same four flags, for the same reason, as the ones the
+    // built-in browser used to pass.
+    "--disable-features=CalculateNativeWinOcclusion",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+    // WHY THIS IS NOT COSMETIC. --remote-debugging-port on its own, with no
+    // --enable-automation anywhere, is enough to make Chrome report
+    // navigator.webdriver === true, and that one boolean is what Google refuses
+    // a sign-in over ("This browser or app may not be secure"). It made Gmail,
+    // Docs and every OAuth consent screen unreachable from a pane, while the
+    // engine was in fact branded Chrome the whole time. This flag turns off the
+    // Blink feature that publishes the boolean and touches nothing else: the
+    // port, the socket and every tool here behave exactly as before.
+    "--disable-blink-features=AutomationControlled",
+    // AND THE PRICE OF THE FLAG ABOVE. Chrome answers an unsupported switch with
+    // a yellow bar under the toolbar - "You are using an unsupported
+    // command-line flag ... Stability and security will suffer" - which in a
+    // pane is a permanent strip of Chrome UI the user cannot do anything about.
+    // This is the supported way to silence exactly that warning.
+    //
+    // MEASURED, not assumed, because it must not undo the sign-in fix: with and
+    // without it, navigator.webdriver stays false and userAgentData.brands stays
+    // "Chromium | Not?A_Brand | Google Chrome". It hides the bar and nothing
+    // else that a page can see.
+    "--test-type",
     `--disk-cache-size=${DISK_CACHE_BYTES}`,
   ];
   // Shared-memory in containers and some Linux desktops is too small for
   // Chromium's default, and the crash it causes looks like a GPU fault.
   if (ctx.os?.platform === "linux") list.push("--disable-dev-shm-usage");
-  if (headless) list.push("--headless=new");
+  // NEVER `--headless`. A headless Chromium reports `HeadlessChrome` in its user
+  // agent and Google refuses a sign-in from it outright - so the one thing a
+  // browser must be able to do would not work. It also produces no window for
+  // the GPU to composite, and a window is precisely what a pane displays. The
+  // first one is hidden by PLACEMENT instead: born off-screen, then moved onto
+  // the pane rectangle that claims it.
+  if (parked) list.push(...PARK_ARGS);
   list.push(`--remote-allow-origins=${allowedOrigin()}`);
   const unpacked = await unpackedExtensions();
   if (unpacked.length) list.push(`--load-extension=${unpacked.join(",")}`);
@@ -118,13 +168,26 @@ async function args(headless) {
 }
 
 /**
- * The page a freshly launched Chromium opens on.
+ * The page a new window starts on.
  *
- * Given no url, Chromium opens `chrome://newtab/` - Google's page, which fetches
- * from the network and is not ours to show inside a TEDI pane. `about:blank` is
- * the blank surface the pane's own address bar implies, and it costs no request.
+ * NOT `about:blank`, AND THAT IS NOT A PREFERENCE. Chrome applies `--app=` only
+ * to an http(s) or data: URL and silently ignores it for anything else, so
+ * `--app=about:blank` opens an ORDINARY window with a tab strip and an omnibox.
+ * Measured on Chrome 152: a normal window and `--app=about:blank` both report
+ * 95px of browser UI (outerHeight - innerHeight), `--app=chrome://version` the
+ * same 95px, while `--app=https://...` and `--app=data:text/html,...` both
+ * report 39px, i.e. the thin frame and nothing else.
+ *
+ * So the blank page has to be a data: URL. It also costs no network round trip,
+ * unlike the default new-tab page, which would fill the pane with Google's
+ * shortcuts before the user has asked for anything. Percent-encoded so the whole
+ * thing is one argv element with no quoting anywhere.
  */
-const START_PAGE = "about:blank";
+const START_PAGE = "data:text/html,%3Ctitle%3ENew%20tab%3C%2Ftitle%3E";
+
+/** Where a window is born, so it never flashes on screen before the pane has
+ *  told it where to be. */
+const PARK_ARGS = ["--window-position=-32000,-32000", "--window-size=1000,700"];
 
 /**
  * The origin Chromium must accept a DevTools WebSocket from.
@@ -190,10 +253,11 @@ async function adopt() {
  * browsers against the same profile directory.
  *
  * @param {(msg: string) => void} [say] Progress for first-run engine setup.
- * @param {boolean} [headless]
+ * @param {boolean} [parked] Start the first window off-screen; a pane moves it
+ *   onto itself once it has claimed it.
  * @returns {Promise<Cdp>}
  */
-export function ensureBrowser(say, headless = true) {
+export function ensureBrowser(say, parked = true) {
   if (state.cdp && !state.cdp.closed) return Promise.resolve(state.cdp);
   if (state.starting) return state.starting;
 
@@ -205,7 +269,10 @@ export function ensureBrowser(say, headless = true) {
     say?.("Starting the browser...");
     state.proc = await ctx.invoke("shell_bg_spawn_direct", {
       program: engine,
-      args: [...(await args(headless)), START_PAGE],
+      // `--app=` rather than a bare url: an app window has no tab strip, no
+      // omnibox and no menu, which is what lets the pane's own toolbar be the
+      // only chrome on both surfaces. See the header of `toolbar.js`.
+      args: [...(await args(parked)), `--app=${START_PAGE}`],
     });
 
     const deadline = Date.now() + START_TIMEOUT_MS;
@@ -283,41 +350,67 @@ export async function armIdleShutdown() {
   }, minutes * 60_000);
 }
 
+
+
 /**
- * Resolve once the browser process we started has exited.
+ * Open one more browser window, for a second pane.
  *
- * Polls `shell_bg_list` because there is no exit event to subscribe to. Used by
- * the extension-manager hand-off: a VISIBLE Chromium owns the profile while the
- * user installs from the Web Store, and the pane can only come back once that
- * window is gone.
+ * Asked of the RUNNING browser over CDP rather than by starting another
+ * process. Spawning relies on Chromium noticing that the profile is already
+ * open and relaying the command line to the instance that owns it - which works,
+ * but costs a process launch, and hands back nothing: the new target then has to
+ * be found by diffing the target list against a snapshot. `Target.createTarget`
+ * simply answers with the id.
  *
- * Returns immediately when nothing is running, so a caller never waits on a
- * process that already died.
+ * @param {string} url
+ * @returns {Promise<string>} the new window's target id
  */
-export async function waitForBrowserExit(pollMs = 1000) {
-  const handle = state.proc;
-  if (handle == null) return;
+export async function openPaneWindow(url) {
+  const cdp = await ensureBrowser();
+  const engine = await resolveEngine();
+  const before = await pageTargetIds(cdp);
+  // Relayed, not created. Chromium notices the profile is already open and hands
+  // the command line to the instance that owns it, which opens the window - so
+  // this costs a process launch that exits immediately, and the new target has
+  // to be found by diffing. `Target.createTarget` would answer with the id
+  // directly and is what this used to do, but it cannot make an APP window, and
+  // an app window is the whole point: no tab strip, no omnibox, no menu.
+  //
+  // `PARK_ARGS` rides along so the window is born off-screen. Without it every
+  // second pane, and every agent `open` with `newTab`, flashed a real Chrome
+  // window at the OS default position before the pane could place it.
+  await ctx
+    .invoke("shell_bg_spawn_direct", {
+      program: engine,
+      args: [`--user-data-dir=${profileDir()}`, ...PARK_ARGS, `--app=${url || START_PAGE}`],
+    })
+    .catch(() => {
+      // The spawn itself failing is reported by the wait below timing out, with
+      // a message about the window rather than about a process the caller never
+      // asked for.
+    });
+
+  const deadline = Date.now() + NEW_WINDOW_TIMEOUT_MS;
   for (;;) {
-    const list = await ctx.invoke("shell_bg_list").catch(() => []);
-    const row = Array.isArray(list) ? list.find((p) => p.handle === handle) : undefined;
-    // Gone from the table counts as exited: the host prunes finished processes.
-    if (!row || row.exited) return;
-    await new Promise((r) => setTimeout(r, pollMs));
+    const now = await pageTargetIds(cdp);
+    for (const id of now) if (!before.has(id)) return id;
+    if (Date.now() > deadline) throw new Error("Chromium did not open a new window.");
+    await new Promise((r) => setTimeout(r, 60));
   }
 }
 
-/**
- * Open a visible Chromium window on `chrome://extensions`.
- *
- * The Chrome Web Store cannot be used headlessly, and one process owns a
- * user-data-dir, so this stops the headless instance first. Whatever the user
- * installs lands in the profile and is there the next time a pane opens.
- */
-export async function openExtensionManager() {
-  await stopBrowser();
-  const engine = await resolveEngine();
-  state.proc = await ctx.invoke("shell_bg_spawn_direct", {
-    program: engine,
-    args: [...(await args(false)), "chrome://extensions"],
-  });
+/** How long to wait for a relayed command line to become a window. Generous:
+ *  the relay is a whole process start, and the alternative to waiting is a pane
+ *  that reports failure while the window is still on its way. */
+const NEW_WINDOW_TIMEOUT_MS = 10_000;
+
+/** Page targets, devtools excluded, as a set of ids. The diff `openPaneWindow`
+ *  compares against. */
+async function pageTargetIds(cdp) {
+  const { targetInfos } = await cdp.send("Target.getTargets").catch(() => ({ targetInfos: [] }));
+  const out = new Set();
+  for (const t of targetInfos ?? []) {
+    if (t.type === "page" && !t.url.startsWith("devtools://")) out.add(t.targetId);
+  }
+  return out;
 }
